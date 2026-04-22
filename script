@@ -1,0 +1,579 @@
+--[[
+    radicalasf GUI  |  Chams + ESP + Aimbot
+    UI Library: daff v1.15.2
+    Toggle GUI: Right Alt
+    Aim Key: RMB (hold)
+]]
+
+--// ============================================================
+--//  SERVICES & CORE REFS
+--// ============================================================
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TeleportService  = game:GetService("TeleportService")
+local Camera           = workspace.CurrentCamera
+local LocalPlayer      = Players.LocalPlayer
+
+--// ============================================================
+--//  SETTINGS  (all live state here)
+--// ============================================================
+local Settings = {
+    -- Aimbot
+    AimbotEnabled  = false,
+    TargetPart     = "Head",
+    AimSmooth      = 0.15,
+    FOVRadius      = 150,
+    TeamCheck      = false,
+
+    -- Chams
+    ChamsEnabled   = false,
+    WallTint       = true,
+
+    -- 2-D ESP
+    BoxESP         = false,
+    NameESP        = false,
+    TracerESP      = false,
+    HealthBarESP   = false,
+    ESPDistance    = 1000,
+
+    -- Misc
+    InfJump        = false,
+    NoClip         = false,
+}
+
+--// ============================================================
+--//  PART NAME MAP  (R15)
+--// ============================================================
+local PART_MAP = {
+    ["Head"] = "Head",
+    ["Body"] = "UpperTorso",
+}
+
+--// ============================================================
+--//  GRAY PALETTE
+--// ============================================================
+local COL = {
+    white      = Color3.fromRGB(255, 255, 255),
+    silver     = Color3.fromRGB(210, 210, 210),
+    midGray    = Color3.fromRGB(130, 130, 130),
+    darkGray   = Color3.fromRGB(65,  65,  65),
+    charcoal   = Color3.fromRGB(28,  28,  28),
+    black      = Color3.fromRGB(0,   0,   0),
+}
+
+--// ============================================================
+--//  CHAMS  (Highlight instances — most reliable method)
+--// ============================================================
+local chams = {}   -- [Player] = Highlight
+
+local function isVisible(char)
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return true end
+    local origin    = Camera.CFrame.Position
+    local direction = root.Position - origin
+    local params    = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignored = { char }
+    if LocalPlayer.Character then
+        table.insert(ignored, LocalPlayer.Character)
+    end
+    params.FilterDescendantsInstances = ignored
+    local result = workspace:Raycast(origin, direction, params)
+    return result == nil
+end
+
+local function applyChamsToPlayer(player)
+    if chams[player] then return end
+    local char = player.Character
+    if not char then return end
+
+    local hl = Instance.new("Highlight")
+    hl.Name                = "rsf_Highlight"
+    hl.Adornee             = char
+    hl.FillColor           = COL.silver
+    hl.OutlineColor        = COL.white
+    hl.FillTransparency    = 0.4
+    hl.OutlineTransparency = 0
+    hl.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Enabled             = true
+    hl.Parent              = char
+
+    chams[player] = hl
+end
+
+local function removeChamsFromPlayer(player)
+    local hl = chams[player]
+    if hl then
+        pcall(function() hl:Destroy() end)
+        chams[player] = nil
+    end
+end
+
+local function enableAllChams()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            applyChamsToPlayer(p)
+        end
+    end
+end
+
+local function disableAllChams()
+    for p in pairs(chams) do
+        removeChamsFromPlayer(p)
+    end
+end
+
+--// ============================================================
+--//  ESP  (Drawing API — 2D overlays)
+--// ============================================================
+local esp = {}  -- [Player] = { box, name, tracer, hpBg, hpBar }
+
+local function newDraw(class, props)
+    local obj = Drawing.new(class)
+    for k, v in pairs(props) do obj[k] = v end
+    return obj
+end
+
+local function createESPForPlayer(player)
+    if esp[player] then return end
+    esp[player] = {
+        box = newDraw("Square", {
+            Visible = false, Filled = false,
+            Color = COL.silver, Thickness = 1, Transparency = 1,
+        }),
+        name = newDraw("Text", {
+            Visible = false, Center = true, Outline = true,
+            Color = COL.white, OutlineColor = COL.black,
+            Size = 13, Font = Drawing.Fonts.UI,
+        }),
+        tracer = newDraw("Line", {
+            Visible = false,
+            Color = COL.midGray, Thickness = 1, Transparency = 1,
+        }),
+        hpBg = newDraw("Square", {
+            Visible = false, Filled = true,
+            Color = COL.charcoal, Thickness = 1, Transparency = 1,
+        }),
+        hpBar = newDraw("Square", {
+            Visible = false, Filled = true,
+            Color = COL.silver, Thickness = 1, Transparency = 1,
+        }),
+    }
+end
+
+local function removeESPForPlayer(player)
+    local bundle = esp[player]
+    if not bundle then return end
+    for _, d in pairs(bundle) do
+        pcall(function() d:Remove() end)
+    end
+    esp[player] = nil
+end
+
+local function hideAllESPForPlayer(player)
+    local bundle = esp[player]
+    if not bundle then return end
+    for _, d in pairs(bundle) do
+        pcall(function() d.Visible = false end)
+    end
+end
+
+--// ============================================================
+--//  PLAYER LIFECYCLE HOOKS
+--// ============================================================
+local function onCharacterAdded(player)
+    task.wait(0.5)
+    if Settings.ChamsEnabled then
+        removeChamsFromPlayer(player)
+        if player.Character then
+            applyChamsToPlayer(player)
+        end
+    end
+end
+
+local function onPlayerAdded(player)
+    if player == LocalPlayer then return end
+    createESPForPlayer(player)
+    player.CharacterAdded:Connect(function()
+        onCharacterAdded(player)
+    end)
+    if player.Character then
+        onCharacterAdded(player)
+    end
+end
+
+local function onPlayerRemoving(player)
+    removeESPForPlayer(player)
+    removeChamsFromPlayer(player)
+end
+
+-- Init existing players
+for _, p in ipairs(Players:GetPlayers()) do
+    onPlayerAdded(p)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(onPlayerRemoving)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    if Settings.ChamsEnabled then
+        enableAllChams()
+    end
+end)
+
+--// ============================================================
+--//  RENDER LOOP  (ESP + Chams tint)
+--// ============================================================
+RunService.RenderStepped:Connect(function()
+    local vp     = Camera.ViewportSize
+    local origin = Vector2.new(vp.X / 2, vp.Y)
+
+    -- Update chams wall tint
+    if Settings.ChamsEnabled then
+        for player, hl in pairs(chams) do
+            if not hl or not hl.Parent then
+                chams[player] = nil
+                continue
+            end
+            local char = player.Character
+            if not char then continue end
+
+            if Settings.WallTint then
+                if isVisible(char) then
+                    hl.FillColor    = COL.silver
+                    hl.OutlineColor = COL.white
+                else
+                    hl.FillColor    = COL.darkGray
+                    hl.OutlineColor = COL.midGray
+                end
+            else
+                hl.FillColor    = COL.silver
+                hl.OutlineColor = COL.white
+            end
+        end
+    end
+
+    -- Update 2D ESP
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+
+        local bundle = esp[player]
+        if not bundle then continue end
+
+        local char = player.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+
+        -- hide if dead / no char
+        if not char or not hum or not root or hum.Health <= 0 then
+            hideAllESPForPlayer(player)
+            continue
+        end
+
+        -- distance cull
+        local dist3d = (root.Position - Camera.CFrame.Position).Magnitude
+        if dist3d > Settings.ESPDistance then
+            hideAllESPForPlayer(player)
+            continue
+        end
+
+        -- compute screen-space bounding box
+        local head    = char:FindFirstChild("Head")
+        local topPos  = head
+            and (head.Position + Vector3.new(0, head.Size.Y / 2, 0))
+            or  (root.Position + Vector3.new(0, 3, 0))
+        local botPos  = root.Position - Vector3.new(0, 3, 0)
+
+        local topSP, topOn = Camera:WorldToViewportPoint(topPos)
+        local botSP        = Camera:WorldToViewportPoint(botPos)
+
+        if not topOn then
+            hideAllESPForPlayer(player)
+            continue
+        end
+
+        local boxH = math.abs(topSP.Y - botSP.Y)
+        local boxW = boxH * 0.55
+        local boxX = topSP.X - boxW / 2
+        local boxY = topSP.Y
+
+        -- hp fraction
+        local hpFrac  = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+        local hpColor = COL.silver:Lerp(COL.darkGray, 1 - hpFrac)
+
+        -- Box
+        bundle.box.Visible = Settings.BoxESP
+        if Settings.BoxESP then
+            bundle.box.Position = Vector2.new(boxX, boxY)
+            bundle.box.Size     = Vector2.new(boxW, boxH)
+        end
+
+        -- Name tag
+        bundle.name.Visible = Settings.NameESP
+        if Settings.NameESP then
+            bundle.name.Text     = player.Name .. "  [" .. math.floor(dist3d) .. "m]"
+            bundle.name.Position = Vector2.new(topSP.X, boxY - 17)
+        end
+
+        -- Tracer
+        bundle.tracer.Visible = Settings.TracerESP
+        if Settings.TracerESP then
+            bundle.tracer.From = origin
+            bundle.tracer.To   = Vector2.new(topSP.X, boxY + boxH)
+        end
+
+        -- Health bar (left of box, 4px wide)
+        bundle.hpBg.Visible  = Settings.HealthBarESP
+        bundle.hpBar.Visible = Settings.HealthBarESP
+        if Settings.HealthBarESP then
+            local bx = boxX - 6
+            bundle.hpBg.Position  = Vector2.new(bx, boxY)
+            bundle.hpBg.Size      = Vector2.new(4, boxH)
+            local fillH = boxH * hpFrac
+            bundle.hpBar.Color    = hpColor
+            bundle.hpBar.Position = Vector2.new(bx, boxY + boxH - fillH)
+            bundle.hpBar.Size     = Vector2.new(4, fillH)
+        end
+    end
+end)
+
+--// ============================================================
+--//  AIMBOT LOOP
+--// ============================================================
+local function getNearestTarget()
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local closestDist  = Settings.FOVRadius
+    local closestPart  = nil
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        if Settings.TeamCheck and p.Team == LocalPlayer.Team then continue end
+
+        local char = p.Character
+        if not char then continue end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+
+        local partName = PART_MAP[Settings.TargetPart] or "Head"
+        local part = char:FindFirstChild(partName) or char:FindFirstChild("HumanoidRootPart")
+        if not part then continue end
+
+        local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+        if not onScreen then continue end
+
+        local dist2d = (Vector2.new(sp.X, sp.Y) - screenCenter).Magnitude
+        if dist2d < closestDist then
+            closestDist = dist2d
+            closestPart = part
+        end
+    end
+
+    return closestPart
+end
+
+RunService.RenderStepped:Connect(function()
+    if not Settings.AimbotEnabled then return end
+    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
+    local part = getNearestTarget()
+    if not part then return end
+    Camera.CFrame = Camera.CFrame:Lerp(
+        CFrame.new(Camera.CFrame.Position, part.Position),
+        Settings.AimSmooth
+    )
+end)
+
+--// ============================================================
+--//  MISC HOOKS
+--// ============================================================
+UserInputService.JumpRequest:Connect(function()
+    if not Settings.InfJump then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+end)
+
+RunService.Stepped:Connect(function()
+    if not Settings.NoClip then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, v in ipairs(char:GetDescendants()) do
+        if v:IsA("BasePart") then v.CanCollide = false end
+    end
+end)
+
+--// ============================================================
+--//  LOAD UI LIBRARY
+--// ============================================================
+local ui = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/ghostofcelleron/Celeron/refs/heads/main/daff"
+))()
+
+--// ============================================================
+--//  WINDOW
+--// ============================================================
+local win = ui:Create({
+    Name          = "radicalasf",
+    ThemeColor    = Color3.fromRGB(80, 80, 80),
+    ThemeGradient = Color3.fromRGB(25, 25, 25),
+    ThemeFont     = Enum.Font.GothamBold,
+    StartupSound  = "rbxassetid://1837452724",
+})
+
+--// ============================================================
+--//  TAB: AIMBOT
+--// ============================================================
+local AimTab = win:Tab("Aimbot")
+
+AimTab:Label("radicalasf  //  aimbot")
+
+AimTab:Dropdown("Target Part", {
+    "Head", "Body"
+}, function(v)
+    Settings.TargetPart = v
+end)
+
+AimTab:Toggle("Aimbot", "Hold Q to snap to nearest enemy", function(v)
+    Settings.AimbotEnabled = v
+end)
+
+AimTab:Toggle("Team Check", "Ignore players on your team", function(v)
+    Settings.TeamCheck = v
+end)
+
+AimTab:Slider("Smoothness", 15, 1, 100, 1, function(v)
+    Settings.AimSmooth = v / 100
+end)
+
+AimTab:Slider("FOV", 150, 10, 500, 10, function(v)
+    Settings.FOVRadius = v
+end)
+
+--// ============================================================
+--//  TAB: CHAMS
+--// ============================================================
+local ChamTab = win:Tab("Chams")
+
+ChamTab:Label("radicalasf  //  chams")
+
+ChamTab:Toggle("Enable Chams", "3D highlight visible through walls", function(v)
+    Settings.ChamsEnabled = v
+    if v then
+        enableAllChams()
+    else
+        disableAllChams()
+    end
+end)
+
+ChamTab:Toggle("Wall Tint", "Gray tint when enemy behind wall", function(v)
+    Settings.WallTint = v
+end)
+
+ChamTab:Label("  Visible  =  silver fill  |  white outline")
+ChamTab:Label("  Hidden   =  dark fill    |  gray  outline")
+
+--// ============================================================
+--//  TAB: ESP
+--// ============================================================
+local ESPTab = win:Tab("ESP")
+
+ESPTab:Label("radicalasf  //  esp")
+
+ESPTab:Toggle("Box ESP", "2D bounding box around enemies", function(v)
+    Settings.BoxESP = v
+    if not v then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if esp[p] then esp[p].box.Visible = false end
+        end
+    end
+end)
+
+ESPTab:Toggle("Name Tags", "Username + distance label", function(v)
+    Settings.NameESP = v
+    if not v then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if esp[p] then esp[p].name.Visible = false end
+        end
+    end
+end)
+
+ESPTab:Toggle("Tracers", "Line from bottom of screen to enemy", function(v)
+    Settings.TracerESP = v
+    if not v then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if esp[p] then esp[p].tracer.Visible = false end
+        end
+    end
+end)
+
+ESPTab:Toggle("Health Bars", "HP bar on left side of box", function(v)
+    Settings.HealthBarESP = v
+    if not v then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if esp[p] then
+                esp[p].hpBg.Visible  = false
+                esp[p].hpBar.Visible = false
+            end
+        end
+    end
+end)
+
+ESPTab:Slider("Max Distance (m)", 500, 100, 2000, 100, function(v)
+    Settings.ESPDistance = v
+end)
+
+--// ============================================================
+--//  TAB: MISC
+--// ============================================================
+local MiscTab = win:Tab("Misc")
+
+MiscTab:Label("radicalasf  //  misc")
+
+MiscTab:Toggle("Infinite Jump", "Jump again mid-air", function(v)
+    Settings.InfJump = v
+end)
+
+MiscTab:Toggle("No Clip", "Phase through all parts", function(v)
+    Settings.NoClip = v
+end)
+
+MiscTab:Slider("Walk Speed", 16, 1, 200, 1, function(v)
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = v end
+    end
+end)
+
+MiscTab:Slider("Jump Power", 50, 10, 300, 5, function(v)
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.JumpPower = v end
+    end
+end)
+
+MiscTab:Button("Rejoin Server", nil, function()
+    TeleportService:Teleport(game.PlaceId)
+end)
+
+MiscTab:Button("Exit GUI", "Clean up and close", function()
+    disableAllChams()
+    for _, p in ipairs(Players:GetPlayers()) do
+        removeESPForPlayer(p)
+    end
+    win:Exit()
+end)
+
+--// ============================================================
+--//  TAB: CREDITS
+--// ============================================================
+local CredTab = win:Tab("Credits")
+
+CredTab:Label("radicalasf  —  chams + esp build")
+CredTab:Label("UI Library   →  radicalasf v1.0")
+CredTab:Label("Developer    →  radicalasf")
+CredTab:Label("Toggle GUI   →  Right Alt")
+CredTab:Label("Aimbot Key   →  RMB  (hold)")
